@@ -71,13 +71,15 @@ def authenticate_gspread_service_account():
             creds_info = st.secrets['google_credentials']
             creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES_GSPREAD)
             if DEBUG_MODE: print("gspread Service Account Authentication successful (from Secrets).")
-            return client = gspread.authorize(creds)
+            client = gspread.authorize(creds)
+            return client
         # ローカル開発環境などで secrets に設定していない場合、ファイルから読み込む（非推奨）
         elif os.path.exists('your_credentials.json'):
              st.warning("警告: ローカルファイルから認証情報を読み込んでいます。本番環境ではSecretsを使用してください。")
              creds = Credentials.from_service_account_file('your_credentials.json', scopes=SCOPES_GSPREAD)
              if DEBUG_MODE: print("gspread Service Account Authentication successful (from File).")
-             return client = gspread.authorize(creds)
+             client = gspread.authorize(creds)
+             return client
         else:
             st.error("認証エラー: Google Sheets 認証情報が見つかりません。Secretsに設定するか、your_credentials.jsonを配置してください。")
             print("ERROR: Google Sheets credentials not found.")
