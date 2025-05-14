@@ -33,7 +33,7 @@ except Exception as e:
     st.stop()
 
 # --- サービスアカウント認証情報 (スプレッドシート操作用) ---
-CREDENTIALS_JSON_PATH = 'your_credentials.json' # ★あなたのサービスアカウント認証情報ファイル
+#CREDENTIALS_JSON_PATH = 'your_credentials.json' # ★あなたのサービスアカウント認証情報ファイル
 SCOPES_GSPREAD = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
 # --- スプレッドシート情報 ---
@@ -65,12 +65,27 @@ INACTIVITY_TIMEOUT_MINUTES = 10 # 非アクティブタイムアウト時間（�
 def authenticate_gspread_service_account():
     if DEBUG_MODE: print("Attempting gspread Service Account Authentication...")
     try:
-        creds = Credentials.from_service_account_file(CREDENTIALS_JSON_PATH, scopes=SCOPES_GSPREAD)
-        client = gspread.authorize(creds)
-        if DEBUG_MODE: print("gspread Service Account Authentication successful.")
-        return client
-    except FileNotFoundError: st.error(f"認証エラー(SA): {CREDENTIALS_JSON_PATH}なし"); print(f"ERROR: SA Credentials file not found: {CREDENTIALS_JSON_PATH}"); return None
-    except Exception as e: st.error(f"認証エラー(SA): {e}"); print(f"ERROR: SA Authentication error: {e}"); return None
+        # Streamlit Cloud の Secrets から認証情報を取得
+        # secrets.toml で [google_credentials] セクションとして設定した場合
+        if 'google_credentials' in st.secrets:
+            creds_info = st.secrets['google_credentials']
+            creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES_GSPREAD)
+            if DEBUG_MODE: print("gspread Service Account Authentication successful (from Secrets).")
+            return client = gspread.authorize(creds)
+        # ローカル開発環境などで secrets に設定していない場合、ファイルから読み込む（非推奨）
+        elif os.path.exists('your_credentials.json'):
+             st.warning("警告: ローカルファイルから認証情報を読み込んでいます。本番環境ではSecretsを使用してください。")
+             creds = Credentials.from_service_account_file('your_credentials.json', scopes=SCOPES_GSPREAD)
+             if DEBUG_MODE: print("gspread Service Account Authentication successful (from File).")
+             return client = gspread.authorize(creds)
+        else:
+            st.error("認証エラー: Google Sheets 認証情報が見つかりません。Secretsに設定するか、your_credentials.jsonを配置してください。")
+            print("ERROR: Google Sheets credentials not found.")
+            return None
+    except FileNotFoundError: # このエラーパスは Secrets から読み込む場合は発生しないはず
+        st.error(f"認証エラー(SA): your_credentials.jsonなし"); print(f"ERROR: SA Credentials file not found: your_credentials.json"); return None
+    except Exception as e:
+        st.error(f"認証エラー(SA): {e}"); print(f"ERROR: SA Authentication error: {e}"); return None
 
 def get_worksheet_safe(gspread_client, spreadsheet_id, sheet_name):
     if not gspread_client: return None

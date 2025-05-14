@@ -176,3 +176,5 @@ cython_debug/
 # Streamlit secrets file
 .streamlit/secrets.toml
 
+# Google Cloud Service Account Credentials
+your_credentials.json
