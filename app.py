@@ -13,7 +13,7 @@ import math
 import os
 
 # === Streamlit のページ設定 (一番最初に呼び出す) ===
-st.set_page_config(page_title="バド部 連絡システム", layout="centered")
+st.set_page_config(page_title="バド部 連絡システム", layout="centered",page_icon="🏸")
 
 # === 2. 設定値 (st.secrets からも読み込む) ===
 try:
