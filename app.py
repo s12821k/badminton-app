@@ -48,6 +48,7 @@ LATE_LIST_SHEET_NAME = '遅刻者名簿' # 新規追加: 遅刻者名簿シー�
 ASSIGNMENT_SHEET_NAME_8 = '割り振り結果_8チーム'
 ASSIGNMENT_SHEET_NAME_12 = '割り振り結果_12チーム'
 ASSIGNMENT_SHEET_NAME_10 = '割り振り結果_10チーム' # 10チーム割り振り結果シート名
+ASSIGNMENT_SHEET_NAME_3 = '割り振り結果_3チーム' # 新規追加: 3チーム割り振り結果シート名
 
 # --- 列名 (ヘッダー名) ---
 COL_MEMBER_ID = '学籍番号'; COL_MEMBER_NAME = '名前'; COL_MEMBER_GRADE = '学年';
@@ -297,49 +298,37 @@ def rebalance_teams_by_gender_and_level(teams, team_stats, late_member_ids, max_
     if DEBUG_MODE: print("性別・レベル均等化のためのチーム再調整が完了しました。")
     return teams
 
-def assign_courts_to_teams_v8(present_members_df, attendance_df_all_logs, target_date, num_teams, include_level1_for_8_10_teams=True):
-    if DEBUG_MODE: print(f"\nコート割り振り開始 (v8)... 参加者 {len(present_members_df)} 名、{num_teams} チーム")
-    if present_members_df.empty:
+# assign_teams 関数を修正し、遅刻者を割り振りに含めるかどうかを制御
+def assign_teams(members_pool_df, late_member_ids, num_teams, assignment_type="general"):
+    if DEBUG_MODE: print(f"\nコート割り振り開始 ({assignment_type} - {num_teams}チーム)... 参加者 {len(members_pool_df)} 名")
+    if members_pool_df.empty:
         if DEBUG_MODE: print("参加者がいないため、割り振りできません。")
         return {}
 
     required_cols = [COL_MEMBER_ID, COL_MEMBER_NAME, COL_MEMBER_GRADE, COL_MEMBER_LEVEL, COL_MEMBER_GENDER]
-    missing_cols = [col for col in required_cols if col not in present_members_df.columns]
+    missing_cols = [col for col in required_cols if col not in members_pool_df.columns]
     if missing_cols:
         st.error(f"エラー: 部員リストに必要な列が見つかりません: {missing_cols}")
         print(f"ERROR: Missing required columns in member list: {missing_cols}")
         return {}
 
-    valid_members_df = present_members_df.copy()
-    valid_members_df[COL_MEMBER_LEVEL] = pd.to_numeric(valid_members_df[COL_MEMBER_LEVEL], errors='coerce').fillna(0).astype(int)
-    valid_members_df[COL_MEMBER_ID] = valid_members_df[COL_MEMBER_ID].astype(str).str.strip()
-    valid_members_df[COL_MEMBER_GENDER] = valid_members_df[COL_MEMBER_GENDER].astype(str).str.strip()
-
-    if valid_members_df.empty:
-        return {}
-
-    total_members = len(valid_members_df)
+    total_members = len(members_pool_df)
     actual_num_teams = min(num_teams, total_members)
     if actual_num_teams <= 0:
         if DEBUG_MODE: print("割り当て可能なチーム数が0です。"); return {}
     if actual_num_teams != num_teams:
         print(f"参加者数 ({total_members}名) に基づき、チーム数を {actual_num_teams} に調整。")
 
-    # 欠席者IDの取得 (割り振り対象から除外するため)
-    absent_ids = get_absent_ids_for_date(attendance_df_all_logs, target_date)
-    present_members_df = valid_members_df[~valid_members_df[COL_MEMBER_ID].astype(str).isin(absent_ids)].copy()
-
-    # 参加者全体の男女比 (再調整関数に渡すため)
-    total_male_present = len(present_members_df[present_members_df[COL_MEMBER_GENDER] == '男性'])
-    total_present_members = len(present_members_df)
+    # 参加者全体の男女比
+    total_male_present = len(members_pool_df[members_pool_df[COL_MEMBER_GENDER] == '男性'])
+    total_present_members = len(members_pool_df)
     target_male_ratio_total = total_male_present / total_present_members if total_present_members > 0 else 0.5
     if DEBUG_MODE: print(f"参加者全体の男性比率: {target_male_ratio_total:.2f}")
 
     teams = defaultdict(list)
-    team_stats = {f"チーム {i+1}": {'count': 0, 'lv6_count': 0, 'lv5_count': 0, 'lv4_count': 0, 'lv1_count': 0, 'male_count': 0, 'female_count': 0, 'late_count': 0, 'lv23_count': 0} for i in range(actual_num_teams)} # Initialize lv23_count
+    team_stats = {f"チーム {i+1}": {'count': 0, 'lv6_count': 0, 'lv5_count': 0, 'lv4_count': 0, 'lv1_count': 0, 'male_count': 0, 'female_count': 0, 'late_count': 0, 'lv23_count': 0, 'lv0_count': 0} for i in range(actual_num_teams)}
 
-    def assign_member(member_series, target_team_name, is_late=False):
-        member_dict = member_series.to_dict()
+    def assign_single_member_to_team(member_dict, target_team_name, is_late_member=False):
         teams[target_team_name].append(member_dict)
         stats = team_stats[target_team_name]
         stats['count'] += 1
@@ -350,108 +339,98 @@ def assign_courts_to_teams_v8(present_members_df, attendance_df_all_logs, target
             elif level == 5: stats['lv5_count'] += 1
             elif level == 4: stats['lv4_count'] += 1
             elif level == 1: stats['lv1_count'] += 1
-            elif level in [2, 3]: stats['lv23_count'] += 1 # Add this line
+            elif level in [2, 3]: stats['lv23_count'] += 1
+            elif level == 0: stats['lv0_count'] += 1
         if member_dict.get(COL_MEMBER_GENDER) == '男性':
             stats['male_count'] += 1
         else:
             stats['female_count'] += 1
-        if is_late:
+        if is_late_member:
             stats['late_count'] += 1
 
-    # 割り振り処理
-    def assign_members_by_level(members_df, target_level, team_stats, target_male_ratio):
-        assigned_count = 0
-        members_to_assign = members_df[members_df[COL_MEMBER_LEVEL] == target_level].to_dict('records')
-        random.shuffle(members_to_assign)
-        for member_data in members_to_assign:
+    remaining_members_to_assign = members_pool_df.to_dict('records')
+    random.shuffle(remaining_members_to_assign) # 各割り振りは個別にシャッフルされます
+    
+    level_priority_order = [6, 5, 4, 3, 2, 1, 0] # 高レベルから割り振る優先順位
+
+    assigned_member_ids = set()
+
+    for level in level_priority_order:
+        members_of_current_level = [m for m in remaining_members_to_assign if m.get(COL_MEMBER_LEVEL) == level and m.get(COL_MEMBER_ID) not in assigned_member_ids]
+        random.shuffle(members_of_current_level) # レベルごとのシャッフルを再度適用 (共通シャッフル廃止のため)
+
+        for member_data in members_of_current_level:
+            member_id = member_data.get(COL_MEMBER_ID)
+            # exclude_latecomers は assign_teams の呼び出し元で制御されるため、ここでは不要なチェックを削除
+            # if exclude_latecomers and member_id in late_member_ids:
+            #     if DEBUG_MODE: print(f"DEBUG: 遅刻者 '{member_data.get(COL_MEMBER_NAME)}' (ID: {member_id}) は割り振りをスキップします。")
+            #     continue 
+
             member_gender = member_data.get(COL_MEMBER_GENDER)
             is_male = (member_gender == '男性')
+            # is_late_member_flagはstats更新用。
+            is_late_member_flag_for_stats = member_id in late_member_ids 
+
             candidate_teams = list(team_stats.keys())
-            if candidate_teams:
-                if target_level in [6, 5, 4, 1]:
-                    # 優先度1: レベルが最も少ないチーム
-                    min_level_count = min(team_stats[name][f'lv{target_level}_count'] for name in candidate_teams)
-                    candidate_teams_by_level_count = [name for name in candidate_teams if team_stats[name][f'lv{target_level}_count'] == min_level_count]
-                    # 優先度2: 人数が最も少ないチーム
-                    min_count = min(team_stats[name]['count'] for name in candidate_teams_by_level_count)
-                    candidate_teams_by_count = [name for name in candidate_teams_by_level_count if team_stats[name]['count'] == min_count]
-                elif target_level in [2, 3]:
-                    # 優先度1: 人数が最も少ないチーム (レベル2/3 の場合)
-                    min_count = min(team_stats[name]['count'] for name in candidate_teams)
-                    candidate_teams_by_count = [name for name in candidate_teams if team_stats[name]['count'] == min_count]
-                else:
-                    candidate_teams_by_count = candidate_teams
 
-                if not candidate_teams_by_count:
-                    target_team_name = random.choice(list(team_stats.keys())) if team_stats else None
-                elif len(candidate_teams_by_count) == 1:
-                    target_team_name = candidate_teams_by_count[0]
-                else:
-                    # 優先度2 (または 1): 性別比率が目標に最も近いチーム
-                    best_gender_diff = float('inf')
-                    next_candidates = []
-                    for team_name in candidate_teams_by_count:
-                        stats = team_stats[team_name]
-                        new_count = stats['count'] + 1
-                        new_male_count = stats['male_count'] + (1 if is_male else 0)
-                        new_male_ratio = new_male_count / new_count if new_count > 0 else 0.5
-                        gender_diff = abs(new_male_ratio - target_male_ratio)
-                        if gender_diff < best_gender_diff - 1e-9:
-                            best_gender_diff = gender_diff
-                            next_candidates = [team_name]
-                        elif abs(gender_diff - best_gender_diff) < 1e-9:
-                            next_candidates.append(team_name)
-                    candidate_teams_by_gender = next_candidates
-                    target_team_name = candidate_teams_by_gender[0] if len(candidate_teams_by_gender) == 1 else random.choice(candidate_teams_by_gender)
+            if not candidate_teams:
+                if DEBUG_MODE: print(f"警告: 割り当て可能なチームがありません。メンバー '{member_data.get(COL_MEMBER_NAME)}' は割り当てられません。")
+                continue
 
-                if target_team_name:
-                    assign_member(pd.Series(member_data), target_team_name)
-                    assigned_count += 1
-        return assigned_count
+            if level in [2, 3]:
+                key_to_check = 'lv23_count'
+            elif level == 0:
+                key_to_check = 'lv0_count'
+            else:
+                key_to_check = f'lv{level}_count'
 
-    # 遅刻者を先に抽出
-    late_member_ids = set() # ここで初期化
-    if attendance_df_all_logs is not None and not attendance_df_all_logs.empty:
-        temp_df_logs = attendance_df_all_logs.copy()
-        if 'dt_timestamp' not in temp_df_logs.columns:
-            temp_df_logs['dt_timestamp'] = pd.to_datetime(temp_df_logs[COL_ATTENDANCE_TIMESTAMP], errors='coerce')
-        if 'dt_target_date' not in temp_df_logs.columns:
-            temp_df_logs['dt_target_date'] = pd.to_datetime(temp_df_logs[COL_ATTENDANCE_TARGET_DATE], errors='coerce').dt.date
-        relevant_logs_for_target_date = temp_df_logs[temp_df_logs['dt_target_date'] == target_date].copy()
-        if DEBUG_MODE: print(f"割り振り対象日({target_date})の関連ログ数: {len(relevant_logs_for_target_date)}")
-        if not relevant_logs_for_target_date.empty:
-            latest_logs_for_latecomers_on_target_date = relevant_logs_for_target_date.sort_values(by='dt_timestamp', ascending=False).drop_duplicates(subset=[COL_MEMBER_ID], keep='first')
-            for index, row in latest_logs_for_latecomers_on_target_date.iterrows():
-                student_id = str(row.get(COL_MEMBER_ID, '')).strip()
-                status = str(row.get(COL_ATTENDANCE_STATUS, '')).strip()
-                if student_id in valid_members_df[COL_MEMBER_ID].values and status == '遅刻':
-                    late_member_ids.add(student_id)
-    late_members_df = present_members_df[present_members_df[COL_MEMBER_ID].isin(late_member_ids)].copy()
-    regular_members_df = present_members_df[~present_members_df[COL_MEMBER_ID].isin(late_member_ids)].copy()
+            min_current_level_count = min(team_stats[name].get(key_to_check, 0) for name in candidate_teams)
+            candidate_teams_by_level_count = [name for name in candidate_teams if team_stats[name].get(key_to_check, 0) == min_current_level_count]
 
-    # 割り振り処理
-    assigned_count = 0
-    assigned_count += assign_members_by_level(regular_members_df, 6, team_stats, target_male_ratio_total)
-    assigned_count += assign_members_by_level(regular_members_df, 4, team_stats, target_male_ratio_total)
-    assigned_count += assign_members_by_level(regular_members_df, 1, team_stats, target_male_ratio_total)
-    assigned_count += assign_members_by_level(regular_members_df, 5, team_stats, target_male_ratio_total)
+            min_count = min(team_stats[name]['count'] for name in candidate_teams_by_level_count)
+            candidate_teams_by_count = [name for name in candidate_teams_by_level_count if team_stats[name]['count'] == min_count]
 
-    # 遅刻者の割り当て (レベル順)
-    late_level_order = [6, 5, 4, 1] # 遅刻者のレベル割り当て順序
-    for level in late_level_order:
-        assigned_count += assign_members_by_level(late_members_df, level, team_stats, target_male_ratio_total)
+            # チーム人数が奇数になることを避けるためのロジック
+            # 総人数が偶数で、チーム数で割り切れる場合に、偶数人数チームを優先する
+            if total_members % 2 == 0 and actual_num_teams > 0 and total_members / actual_num_teams == round(total_members / actual_num_teams):
+                # 偶数人数チームに割り当てることで、現在の人数が偶数になるチームを優先
+                even_candidates = [
+                    team_name for team_name in candidate_teams_by_count
+                    if (team_stats[team_name]['count'] + 1) % 2 == 0
+                ]
+                if even_candidates:
+                    candidate_teams_by_count = even_candidates
+                elif DEBUG_MODE:
+                    print(f"DEBUG: 奇数回避のため、偶数人数になるチームを優先できませんでした。現在の候補: {candidate_teams_by_count}")
 
-    # 残りのメンバーを割り当て (レベル2, 3)
-    other_levels_df = regular_members_df[~regular_members_df[COL_MEMBER_LEVEL].isin([6, 5, 4, 1])].copy()
-    assigned_count += assign_members_by_level(other_levels_df, 2, team_stats, target_male_ratio_total)
-    assigned_count += assign_members_by_level(other_levels_df, 3, team_stats, target_male_ratio_total)
 
-    # --- 修正箇所: 男女比の偏りを再調整 (遅刻者を除外) ---
-    teams = rebalance_teams_by_gender_and_level(teams, team_stats, late_member_ids)
-    # --- ここまで修正 ---
+            if not candidate_teams_by_count:
+                target_team_name = random.choice(candidate_teams)
+            elif len(candidate_teams_by_count) == 1:
+                target_team_name = candidate_teams_by_count[0]
+            else:
+                best_gender_diff = float('inf')
+                next_candidates = []
+                for team_name in candidate_teams_by_count:
+                    stats = team_stats[team_name]
+                    new_count = stats['count'] + 1
+                    new_male_count = stats['male_count'] + (1 if is_male else 0)
+                    new_male_ratio = new_male_count / new_count if new_count > 0 else 0.5
+                    gender_diff = abs(new_male_ratio - target_male_ratio_total)
+                    if gender_diff < best_gender_diff - 1e-9:
+                        best_gender_diff = gender_diff
+                        next_candidates = [team_name]
+                    elif abs(gender_diff - best_gender_diff) < 1e-9:
+                        next_candidates.append(team_name)
+                target_team_name = next_candidates[0] if len(next_candidates) == 1 else random.choice(next_candidates)
+
+            assign_single_member_to_team(member_data, target_team_name, is_late_member_flag_for_stats)
+            assigned_member_ids.add(member_data.get(COL_MEMBER_ID))
+
+    teams = rebalance_teams_by_gender_and_level(teams, team_stats, late_member_ids) # 遅刻者は入れ替え対象外のまま
 
     if DEBUG_MODE:
-        print(f"\n--- チーム割り振り最終結果 (v8) ---")
+        print(f"\n--- チーム割り振り最終結果 ({assignment_type} - {num_teams}チーム) ---")
         total_assigned = 0
         for team_name in sorted(teams.keys(), key=lambda name: int(name.split()[-1])):
             members_in_team = teams[team_name]
@@ -466,9 +445,23 @@ def assign_courts_to_teams_v8(present_members_df, attendance_df_all_logs, target
             num_female = stats['female_count']
             num_late = stats['late_count']
             num_lv23 = stats.get('lv23_count', 0)
-            print(f" {team_name} ({len(members_in_team)}名, Lv6:{num_lv6}, Lv5:{num_lv5}, Lv4:{num_lv4}, Lv1:{num_lv1}, Lv2/3:{num_lv23}, 男:{num_male}, 女:{num_female}, 遅刻:{num_late}): {', '.join(member_names)}")
+            num_lv0 = stats.get('lv0_count', 0)
+            print(f" {team_name} ({len(members_in_team)}名, Lv6:{num_lv6}, Lv5:{num_lv5}, Lv4:{num_lv4}, Lv1:{num_lv1}, Lv2/3:{num_lv23}, Lv0:{num_lv0}, 男:{num_male}, 女:{num_female}, 遅刻:{num_late}): {', '.join(member_names)}")
         print("---------------------------------")
-        print(f"合計割り当て人数: {total_assigned}")
+        # 期待値はメンバープールそのものの長さ
+        expected_count_for_debug = len(members_pool_df)
+
+        print(f"合計割り当て人数: {total_assigned} (期待値: {expected_count_for_debug})")
+
+        if total_assigned != expected_count_for_debug:
+            unassigned_count = expected_count_for_debug - total_assigned
+            print(f"警告: 割り当てられなかったメンバーが {unassigned_count} 名います。")
+            unassigned_members = [
+                m for m in members_pool_df.to_dict('records')
+                if m.get(COL_MEMBER_ID) not in assigned_member_ids
+            ]
+            for um in unassigned_members:
+                print(f" - 未割り当て: {um.get(COL_MEMBER_NAME)} (ID: {um.get(COL_MEMBER_ID)}, Level: {um.get(COL_MEMBER_LEVEL)})")
     return dict(teams)
 
 def format_assignment_results(assignments, practice_type_or_teams, target_date):
@@ -662,8 +655,13 @@ if not st.session_state.member_df.empty:
         if errors: st.warning(f"入力エラー: {', '.join(errors)}してください。")
         else:
             user_email_for_record = f"{student_id_to_submit}@oita-u.ac.jp" if student_id_to_submit else "unknown@example.com"
+            
+            # 記録時刻をJSTに調整
+            now_jst = datetime.datetime.now() + datetime.timedelta(hours=9)
+            record_timestamp = now_jst.strftime("%Y-%m-%d %H:%M:%S")
+
             record_data = {
-                '記録日時': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                '記録日時': record_timestamp,
                 '対象練習日': target_date_to_submit.strftime('%Y/%m/%d'),
                 '学籍番号': student_id_to_submit, '学年': grade_to_submit, '名前': name_to_submit,
                 '状況': status_to_submit, '遅刻・欠席理由': reason_to_submit, '遅刻開始時刻': late_time_to_submit,
@@ -697,9 +695,9 @@ def update_name_options_for_lookup_callback():
     if DEBUG_MODE: print(f"DEBUG (Lookup Callback): Grade changed to: {grade}")
     name_options = ["---"]
     id_map = {}
-    if grade != "---" and not st.session_state.member_df.empty:
+    if grade != "---" and not member_df_for_lookup.empty:
         try:
-            filtered = st.session_state.member_df[st.session_state.member_df[COL_MEMBER_GRADE].astype(str).str.strip() == str(grade).strip()]
+            filtered = member_df_for_lookup[member_df_for_lookup[COL_MEMBER_GRADE].astype(str).str.strip() == str(grade).strip()]
             if not filtered.empty:
                 name_options = ["---"] + sorted(filtered[COL_MEMBER_NAME].tolist())
                 id_map = pd.Series(filtered[COL_MEMBER_ID].values, index=filtered[COL_MEMBER_NAME]).to_dict()
@@ -778,10 +776,12 @@ if st.session_state.is_admin:
     st.success("管理者としてログイン済みです。")
     if not st.session_state.member_df.empty:
         target_date_assign_input = st.date_input("割り振り対象日を選択:", value=datetime.date.today(), key="assignment_date_admin_main")
-        include_level1 = st.radio(
-            "8チーム/10チーム割り振りにレベル1を含めますか？",
+        
+        # 8チーム割り振りの1年生（レベル1）に関するラジオボタン
+        include_level1_for_8_teams_selection = st.radio(
+            "8チーム割り振りに1年生（レベル1）を含めますか？",
             options=["含める", "含めない"],
-            key="include_level1_assign_radio",
+            key="include_level1_assign_radio_8_teams",
             horizontal=True
         )
 
@@ -795,113 +795,171 @@ if st.session_state.is_admin:
                 absent_ids = get_absent_ids_for_date(attendance_df_all_logs, target_date_assign_input)
 
                 member_df_assign = st.session_state.member_df
-                present_members_df = member_df_assign[~member_df_assign[COL_MEMBER_ID].astype(str).isin(absent_ids)].copy()
-                if DEBUG_MODE: st.write(f"参加予定者総数 (遅刻者含む): {len(present_members_df)} 名")
-
-                absent_members_df = member_df_assign[member_df_assign[COL_MEMBER_ID].astype(str).isin(absent_ids)].copy()
-                if DEBUG_MODE: st.write(f"欠席連絡者: {len(absent_members_df)} 名")
-
-                # 遅刻者リストの抽出と出力
-                late_members_df = pd.DataFrame()
-                late_ids_for_sheet = set() # 遅刻者のIDを格納するセット
+                
+                # 遅刻者IDの取得 (遅刻者名簿出力用と、3チーム割り振りからの除外用)
+                late_member_ids = set()
+                late_members_df_for_output = pd.DataFrame() 
                 if attendance_df_all_logs is not None and not attendance_df_all_logs.empty:
-                    # 対象練習日のログに絞り込み、最新の連絡のみを考慮
-                    temp_df_logs_late = attendance_df_all_logs.copy()
-                    if 'dt_timestamp' not in temp_df_logs_late.columns:
-                        temp_df_logs_late['dt_timestamp'] = pd.to_datetime(temp_df_logs_late[COL_ATTENDANCE_TIMESTAMP], errors='coerce')
-                    if 'dt_target_date' not in temp_df_logs_late.columns:
-                        temp_df_logs_late['dt_target_date'] = pd.to_datetime(temp_df_logs_late[COL_ATTENDANCE_TARGET_DATE], errors='coerce').dt.date
-
-                    relevant_logs_for_late = temp_df_logs_late[temp_df_logs_late['dt_target_date'] == target_date_assign_input].copy()
-                    if not relevant_logs_for_late.empty:
-                        latest_logs_for_late = relevant_logs_for_late.sort_values(by='dt_timestamp', ascending=False).drop_duplicates(subset=[COL_MEMBER_ID], keep='first')
-
-                        for index, row in latest_logs_for_late.iterrows():
+                    temp_df_logs = attendance_df_all_logs.copy()
+                    temp_df_logs['dt_timestamp'] = pd.to_datetime(temp_df_logs[COL_ATTENDANCE_TIMESTAMP], errors='coerce')
+                    temp_df_logs['dt_target_date'] = pd.to_datetime(temp_df_logs[COL_ATTENDANCE_TARGET_DATE], errors='coerce').dt.date
+                    relevant_logs_for_target_date = temp_df_logs[temp_df_logs['dt_target_date'] == target_date_assign_input].copy()
+                    if not relevant_logs_for_target_date.empty:
+                        latest_logs_for_latecomers_on_target_date = relevant_logs_for_target_date.sort_values(by='dt_timestamp', ascending=False).drop_duplicates(subset=[COL_MEMBER_ID], keep='first')
+                        for index, row in latest_logs_for_latecomers_on_target_date.iterrows():
                             student_id = str(row.get(COL_MEMBER_ID, '')).strip()
                             status = str(row.get(COL_ATTENDANCE_STATUS, '')).strip()
                             if student_id and status == '遅刻':
-                                late_ids_for_sheet.add(student_id) # 遅刻者IDをセットに追加
-
-                        # 部員リストから遅刻者情報を取得
-                        late_members_df = member_df_assign[member_df_assign[COL_MEMBER_ID].astype(str).isin(late_ids_for_sheet)].copy()
-
-                        # 遅刻連絡の理由と時刻を追加
-                        late_members_df = pd.merge(late_members_df, latest_logs_for_late[[COL_MEMBER_ID, COL_ATTENDANCE_LATE_TIME, COL_ATTENDANCE_REASON]],
+                                late_member_ids.add(student_id)
+                        
+                        late_members_df_for_output = member_df_assign[member_df_assign[COL_MEMBER_ID].astype(str).isin(late_member_ids)].copy()
+                        late_members_df_for_output = pd.merge(late_members_df_for_output, latest_logs_for_latecomers_on_target_date[[COL_MEMBER_ID, COL_ATTENDANCE_LATE_TIME, COL_ATTENDANCE_REASON]], 
                                                 on=COL_MEMBER_ID, how='left')
 
-                if DEBUG_MODE: st.write(f"遅刻連絡者: {len(late_members_df)} 名")
 
-                # 参加者名簿の出力
-                participant_ws = get_worksheet_safe(gspread_client, SPREADSHEET_ID, PARTICIPANT_LIST_SHEET_NAME)
-                if participant_ws:
-                    if DEBUG_MODE: st.write(f"参加者名簿 ({target_date_assign_input}) を出力...")
-                    if not present_members_df.empty:
-                        output_cols_p = [COL_MEMBER_ID, COL_MEMBER_NAME, COL_MEMBER_GRADE, COL_MEMBER_LEVEL, COL_MEMBER_GENDER]
-                        valid_output_cols_p = [col for col in output_cols_p if col in present_members_df.columns]
-                        participant_list_output = [[f"{target_date_assign_input.strftime('%Y-%m-%d')} 参加者リスト"]]
-                        participant_list_output.append(valid_output_cols_p); participant_list_output.extend(present_members_df[valid_output_cols_p].values.tolist())
-                        write_results_to_sheet(participant_ws, participant_list_output, data_name=f"{target_date_assign_input.strftime('%Y-%m-%d')} 参加者名簿")
-                    else: write_results_to_sheet(participant_ws, [[f"{target_date_assign_input.strftime('%Y-%m-%d')} の参加者なし"]], data_name="参加者名簿")
-                else: st.error(f"シート '{PARTICIPANT_LIST_SHEET_NAME}' が見つかりません。")
+                # --- メンバープールの準備 ---
+                # 8, 10, 12コート割り振り用のベースプール (欠席者のみを除外し、遅刻者は含む)
+                all_non_absent_members_df = member_df_assign[
+                    ~member_df_assign[COL_MEMBER_ID].astype(str).isin(absent_ids)
+                ].copy()
+                if DEBUG_MODE: st.write(f"欠席者を除いたメンバー総数 (遅刻者含む): {len(all_non_absent_members_df)} 名")
 
-                # 欠席者名簿の出力
-                absent_ws = get_worksheet_safe(gspread_client, SPREADSHEET_ID, ABSENT_LIST_SHEET_NAME)
-                if absent_ws:
-                    if DEBUG_MODE: st.write(f"欠席者名簿 ({target_date_assign_input}) を出力...")
-                    if not absent_members_df.empty:
-                        absent_output_cols = [COL_MEMBER_ID, COL_MEMBER_NAME, COL_MEMBER_GRADE, COL_ATTENDANCE_REASON] # 理由も表示
-                        valid_absent_cols = [col for col in absent_members_df.columns if col in absent_output_cols] # 存在する列のみ
-                        absent_list_output = [[f"{target_date_assign_input.strftime('%Y-%m-%d')} 欠席者リスト"]]
-                        absent_list_output.append(valid_absent_cols); absent_list_output.extend(absent_members_df[valid_absent_cols].values.tolist())
-                        write_results_to_sheet(absent_ws, absent_list_output, data_name=f"{target_date_assign_input.strftime('%Y-%m-%d')} 欠席者名簿")
-                    else: absent_list_output = [[f"{target_date_assign_input.strftime('%Y-%m-%d')} の欠席連絡者なし"]]
-                    write_results_to_sheet(absent_ws, absent_list_output, data_name=f"欠席者名簿")
-                else: st.error(f"シート '{ABSENT_LIST_SHEET_NAME}' が見つかりません。")
+                # 3チーム割り振り専用のプール (欠席者と遅刻者の両方を除外)
+                all_non_absent_and_non_late_members_df = all_non_absent_members_df[
+                    ~all_non_absent_members_df[COL_MEMBER_ID].astype(str).isin(late_member_ids)
+                ].copy()
+                if DEBUG_MODE: st.write(f"3チーム割り振り対象のメンバー総数 (欠席者・遅刻者除く): {len(all_non_absent_and_non_late_members_df)} 名")
 
-                # 遅刻者名簿の出力
+                # --- 名簿シートの出力 ---
+                # 参加者名簿の出力 (8, 10, 12コートの割り振り対象と一致させるため、遅刻者も含むプールを出力)
+                participant_ws = get_worksheet_safe(gspread_client, SPREADSHEET_ID, PARTICIPANT_LIST_SHEET_NAME) 
+                if participant_ws: 
+                    if DEBUG_MODE: st.write(f"参加者名簿 ({target_date_assign_input}) を出力...") 
+                    if not all_non_absent_members_df.empty:
+                        output_cols_p = [COL_MEMBER_ID, COL_MEMBER_NAME, COL_MEMBER_GRADE, COL_MEMBER_LEVEL, COL_MEMBER_GENDER] 
+                        valid_output_cols_p = [col for col in output_cols_p if col in all_non_absent_members_df.columns] 
+                        participant_list_output = [[f"{target_date_assign_input.strftime('%Y-%m-%d')} 参加者リスト"]] 
+                        participant_list_output.append(valid_output_cols_p); 
+                        participant_list_output.extend(all_non_absent_members_df[valid_output_cols_p].values.tolist()) 
+                        write_results_to_sheet(participant_ws, participant_list_output, data_name=f"{target_date_assign_input.strftime('%Y-%m-%d')} 参加者名簿") 
+                    else: write_results_to_sheet(participant_ws, [[f"{target_date_assign_input.strftime('%Y-%m-%d')} の参加者なし"]], data_name="参加者名簿") 
+                else: st.error(f"シート '{PARTICIPANT_LIST_SHEET_NAME}' が見つかりません。") 
+
+                absent_members_df_for_output = member_df_assign[member_df_assign[COL_MEMBER_ID].astype(str).isin(absent_ids)].copy()
+                absent_ws = get_worksheet_safe(gspread_client, SPREADSHEET_ID, ABSENT_LIST_SHEET_NAME) 
+                if absent_ws: 
+                    if DEBUG_MODE: st.write(f"欠席者名簿 ({target_date_assign_input}) を出力...") 
+                    if not absent_members_df_for_output.empty: 
+                        absent_output_cols = [COL_MEMBER_ID, COL_MEMBER_NAME, COL_MEMBER_GRADE, COL_ATTENDANCE_REASON]
+                        valid_absent_cols = [col for col in absent_members_df_for_output.columns if col in absent_output_cols]
+                        absent_list_output = [[f"{target_date_assign_input.strftime('%Y-%m-%d')} 欠席者リスト"]] 
+                        absent_list_output.append(valid_absent_cols); absent_list_output.extend(absent_members_df_for_output[valid_absent_cols].values.tolist()) 
+                        write_results_to_sheet(absent_ws, absent_list_output, data_name=f"欠席者名簿") 
+                    else: absent_list_output = [[f"{target_date_assign_input.strftime('%Y-%m-%d')} の欠席連絡者なし"]] 
+                    write_results_to_sheet(absent_ws, absent_list_output, data_name=f"欠席者名簿") 
+                else: st.error(f"シート '{ABSENT_LIST_SHEET_NAME}' が見つかりません。") 
+
                 late_ws = get_worksheet_safe(gspread_client, SPREADSHEET_ID, LATE_LIST_SHEET_NAME)
                 if late_ws:
                     if DEBUG_MODE: st.write(f"遅刻者名簿 ({target_date_assign_input}) を出力...")
-                    if not late_members_df.empty:
+                    if not late_members_df_for_output.empty:
                         late_output_cols = [COL_MEMBER_ID, COL_MEMBER_NAME, COL_MEMBER_GRADE, COL_ATTENDANCE_LATE_TIME, COL_ATTENDANCE_REASON]
-                        valid_late_cols = [col for col in late_output_cols if col in late_members_df.columns]
+                        valid_late_cols = [col for col in late_output_cols if col in late_members_df_for_output.columns]
                         late_list_output = [[f"{target_date_assign_input.strftime('%Y-%m-%d')} 遅刻者リスト"]]
-                        late_list_output.append(valid_late_cols); late_list_output.extend(late_members_df[valid_late_cols].values.tolist())
-                        write_results_to_sheet(late_ws, late_list_output, data_name=f"{target_date_assign_input.strftime('%Y-%m-%d')} 遅刻者名簿")
+                        late_list_output.append(valid_late_cols); late_list_output.extend(late_members_df_for_output[valid_late_cols].values.tolist())
+                        write_results_to_sheet(late_ws, late_list_output, data_name=f"遅刻者名簿")
                     else: late_list_output = [[f"{target_date_assign_input.strftime('%Y-%m-%d')} の遅刻連絡者なし"]]
                     write_results_to_sheet(late_ws, late_list_output, data_name=f"遅刻者名簿")
                 else: st.error(f"シート '{LATE_LIST_SHEET_NAME}' が見つかりません。")
+                # --- 名簿シートの出力ここまで ---
 
-                if present_members_df.empty: st.warning("参加予定者がいないため、コート割り振りは行いません。")
+
+                # 割り振り対象者が一人もいない場合
+                if all_non_absent_members_df.empty:
+                    st.warning("割り振り対象の参加予定者がいないため、コート割り振りは行いません。")
                 else:
-                    present_members_for_8_10 = present_members_df.copy()
-                    if st.session_state.include_level1_assign_radio == "含めない":
-                        present_members_for_8_10 = present_members_df[present_members_df[COL_MEMBER_LEVEL] != 1].copy()
-                    if DEBUG_MODE: st.write(f"8/10チーム割り振り対象者 (レベル1除く): {len(present_members_for_8_10)} 名")
+                    num_teams_8 = TEAMS_COUNT_MAP.get('ノック', 8)
+                    num_teams_10 = TEAMS_COUNT_MAP.get('ハンドノック', 10)
+                    num_teams_12 = TEAMS_COUNT_MAP.get('その他', 12)
+                    num_teams_3 = 3 # 3チーム割り振りの場合
 
-                    num_teams_8 = TEAMS_COUNT_MAP.get('ノック', 8); num_teams_10 = TEAMS_COUNT_MAP.get('ハンドノック', 10); num_teams_12 = TEAMS_COUNT_MAP.get('その他', 12)
+                    # --- 各割り振り用のメンバープールを準備 ---
+                    
+                    # 8チーム割り振り用のメンバープール (1年生の扱いをラジオボタンで選択)
+                    if include_level1_for_8_teams_selection == "含める":
+                        pool_for_8_teams = all_non_absent_members_df.copy() # 遅刻者含む
+                    else:
+                        # レベル1を除外したプールを、遅刻者も含む all_non_absent_members_df から作成
+                        pool_for_8_teams = all_non_absent_members_df[all_non_absent_members_df[COL_MEMBER_LEVEL] != 1].copy()
+
+                    # 10チーム割り振り用メンバープールは常にレベル1を含む (遅刻者含む)
+                    pool_for_10_teams = all_non_absent_members_df.copy() 
+
+                    # 12チーム割り振り用メンバープールは常にレベル1を含む (遅刻者含む)
+                    pool_for_12_teams = all_non_absent_members_df.copy() 
+
+                    # 3チーム割り振り用メンバープール (欠席者と遅刻者の両方を含まない)
+                    pool_for_3_teams = all_non_absent_and_non_late_members_df.copy()
+
+
+                    # --- 割り振り実行 ---
+                    # 8チーム割り振り
                     assignment_ws_8 = get_worksheet_safe(gspread_client, SPREADSHEET_ID, ASSIGNMENT_SHEET_NAME_8)
                     if assignment_ws_8:
-                        if DEBUG_MODE: st.write("--- 8チーム割り振りを実行中 (v8) ---")
-                        assignments_8 = assign_courts_to_teams_v8(present_members_for_8_10, attendance_df_all_logs, target_date_assign_input, num_teams_8, st.session_state.include_level1_assign_radio == "含める")
+                        if DEBUG_MODE: st.write("--- 8チーム割り振りを実行中 ---")
+                        assignments_8 = assign_teams(
+                            pool_for_8_teams, # 遅刻者を含むか含まないかはラジオボタンによる
+                            late_member_ids,  # 遅刻者IDを渡す (入れ替え対象外判定用)
+                            num_teams_8,
+                            assignment_type="8チーム" # 割り振りタイプを渡す
+                        )
                         if assignments_8: result_output_8 = format_assignment_results(assignments_8, "8チーム", target_date_assign_input); write_results_to_sheet(assignment_ws_8, result_output_8, f"8チーム結果({target_date_assign_input.strftime('%Y-%m-%d')})")
                         else: st.warning("8チーム割り振り結果なし。")
                     else: st.error(f"シート '{ASSIGNMENT_SHEET_NAME_8}' が見つかりません。")
+                    
+                    # 10チーム割り振り
                     assignment_ws_10 = get_worksheet_safe(gspread_client, SPREADSHEET_ID, ASSIGNMENT_SHEET_NAME_10)
                     if assignment_ws_10:
-                        if DEBUG_MODE: st.write("--- 10チーム割り振りを実行中 (v8) ---")
-                        assignments_10 = assign_courts_to_teams_v8(present_members_for_8_10, attendance_df_all_logs, target_date_assign_input, num_teams_10, st.session_state.include_level1_assign_radio == "含める")
+                        if DEBUG_MODE: st.write("--- 10チーム割り振りを実行中 ---")
+                        assignments_10 = assign_teams(
+                            pool_for_10_teams, # レベル1を含むプール (遅刻者含む)
+                            late_member_ids, # 遅刻者IDを渡す (入れ替え対象外判定用)
+                            num_teams_10,
+                            assignment_type="10チーム" # 割り振りタイプを渡す
+                        )
                         if assignments_10: result_output_10 = format_assignment_results(assignments_10, "10チーム", target_date_assign_input); write_results_to_sheet(assignment_ws_10, result_output_10, f"10チーム結果({target_date_assign_input.strftime('%Y-%m-%d')})")
                         else: st.warning("10チーム割り振り結果なし。")
                     else: st.error(f"シート '{ASSIGNMENT_SHEET_NAME_10}' が見つかりません。")
 
+                    # 12チーム割り振り
                     assignment_ws_12 = get_worksheet_safe(gspread_client, SPREADSHEET_ID, ASSIGNMENT_SHEET_NAME_12)
                     if assignment_ws_12:
-                        if DEBUG_MODE: st.write("--- 12チーム割り振りを実行中 (v8) ---")
-                        assignments_12 = assign_courts_to_teams_v8(present_members_df, attendance_df_all_logs, target_date_assign_input, num_teams_12, True)
+                        if DEBUG_MODE: st.write("--- 12チーム割り振りを実行中 ---")
+                        assignments_12 = assign_teams(
+                            pool_for_12_teams, # レベル1を含むプール (遅刻者含む)
+                            late_member_ids, # 遅刻者IDを渡す (入れ替え対象外判定用)
+                            num_teams_12,
+                            assignment_type="12チーム" # 割り振りタイプを渡す
+                        )
                         if assignments_12: result_output_12 = format_assignment_results(assignments_12, "12チーム", target_date_assign_input); write_results_to_sheet(assignment_ws_12, result_output_12, f"12チーム結果({target_date_assign_input.strftime('%Y-%m-%d')})")
                         else: st.warning("12チーム割り振り結果なし。")
                     else: st.error(f"シート '{ASSIGNMENT_SHEET_NAME_12}' が見つかりません。")
+
+                    # --- 3チーム割り振り (遅刻者を含まない) ---
+                    assignment_ws_3 = get_worksheet_safe(gspread_client, SPREADSHEET_ID, ASSIGNMENT_SHEET_NAME_3)
+                    if assignment_ws_3:
+                        if DEBUG_MODE: st.write("--- 3チーム割り振りを実行中 (素振り指導向け - 遅刻者除外) ---")
+                        assignments_3 = assign_teams(
+                            pool_for_3_teams, # 遅刻者を含まないプールを渡す
+                            late_member_ids,  # 遅刻者IDを渡す (入れ替え対象外判定用)
+                            num_teams_3,
+                            assignment_type="3チーム (素振り指導)" # 割り振りタイプを渡す
+                        )
+                        if assignments_3: result_output_3 = format_assignment_results(assignments_3, "3チーム (素振り指導)", target_date_assign_input); write_results_to_sheet(assignment_ws_3, result_output_3, f"3チーム結果({target_date_assign_input.strftime('%Y-%m-%d')})")
+                        else: st.warning("3チーム割り振り結果なし。")
+                    else: st.error(f"シート '{ASSIGNMENT_SHEET_NAME_3}' が見つかりません。")
+                    # --- 3チーム割り振りここまで ---
+
                 st.info(f"{target_date_assign_input.strftime('%Y-%m-%d')} の割り振り処理と名簿出力が完了しました。")
     else:
         st.info("コート割り振り実行には部員データが必要です。")
