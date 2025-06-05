@@ -361,14 +361,8 @@ def assign_teams(members_pool_df, late_member_ids, num_teams, assignment_type="g
 
         for member_data in members_of_current_level:
             member_id = member_data.get(COL_MEMBER_ID)
-            # exclude_latecomers は assign_teams の呼び出し元で制御されるため、ここでは不要なチェックを削除
-            # if exclude_latecomers and member_id in late_member_ids:
-            #     if DEBUG_MODE: print(f"DEBUG: 遅刻者 '{member_data.get(COL_MEMBER_NAME)}' (ID: {member_id}) は割り振りをスキップします。")
-            #     continue 
-
-            member_gender = member_data.get(COL_MEMBER_GENDER)
-            is_male = (member_gender == '男性')
-            # is_late_member_flagはstats更新用。
+            # is_male はここで定義されます
+            is_male = (member_data.get(COL_MEMBER_GENDER) == '男性') 
             is_late_member_flag_for_stats = member_id in late_member_ids 
 
             candidate_teams = list(team_stats.keys())
@@ -415,6 +409,7 @@ def assign_teams(members_pool_df, late_member_ids, num_teams, assignment_type="g
                     stats = team_stats[team_name]
                     new_count = stats['count'] + 1
                     new_male_count = stats['male_count'] + (1 if is_male else 0)
+                    new_female_count = stats['female_count'] + (1 if not is_male else 0) # 修正: female_count も同様に修正
                     new_male_ratio = new_male_count / new_count if new_count > 0 else 0.5
                     gender_diff = abs(new_male_ratio - target_male_ratio_total)
                     if gender_diff < best_gender_diff - 1e-9:
@@ -695,7 +690,7 @@ def update_name_options_for_lookup_callback():
     if DEBUG_MODE: print(f"DEBUG (Lookup Callback): Grade changed to: {grade}")
     name_options = ["---"]
     id_map = {}
-    if grade != "---" and not member_df_for_lookup.empty:
+    if grade != "---" and not member_df_for_lookup.empty: # member_df_for_lookup を使用
         try:
             filtered = member_df_for_lookup[member_df_for_lookup[COL_MEMBER_GRADE].astype(str).str.strip() == str(grade).strip()]
             if not filtered.empty:
@@ -745,6 +740,7 @@ if st.session_state.authentication_status is True:
                         ].copy()
 
                         if user_records_df.empty:
+                            # 修正箇所: student_id_to_today_submit を student_id_to_lookup に変更
                             st.info(f"{name_to_lookup} さん ({student_id_to_lookup}) の過去の連絡記録は見つかりませんでした。")
                         else:
                             user_records_df = user_records_df.sort_values(by=COL_ATTENDANCE_TIMESTAMP, ascending=False)
@@ -874,7 +870,6 @@ if st.session_state.is_admin:
                 # --- 名簿シートの出力ここまで ---
 
 
-                # 割り振り対象者が一人もいない場合
                 if all_non_absent_members_df.empty:
                     st.warning("割り振り対象の参加予定者がいないため、コート割り振りは行いません。")
                 else:
@@ -908,7 +903,7 @@ if st.session_state.is_admin:
                     if assignment_ws_8:
                         if DEBUG_MODE: st.write("--- 8チーム割り振りを実行中 ---")
                         assignments_8 = assign_teams(
-                            pool_for_8_teams, # 遅刻者を含むか含まないかはラジオボタンによる
+                            pool_for_8_teams, # 遅刻者を含むプールを渡す
                             late_member_ids,  # 遅刻者IDを渡す (入れ替え対象外判定用)
                             num_teams_8,
                             assignment_type="8チーム" # 割り振りタイプを渡す
