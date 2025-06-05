@@ -565,7 +565,9 @@ if datetime.datetime.now() - st.session_state.last_interaction_time > datetime.t
 
 st.session_state.last_interaction_time = datetime.datetime.now()
 
-st.caption(f"現在時刻: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+# 修正箇所: アプリに表示される現在時刻をJSTに修正
+now_display_jst = datetime.datetime.now() + datetime.timedelta(hours=9)
+st.caption(f"現在時刻: {now_display_jst.strftime('%Y-%m-%d %H:%M:%S')}")
 
 gspread_client = authenticate_gspread_service_account()
 if not gspread_client:
