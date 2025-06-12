@@ -12,7 +12,7 @@ import random
 import os
 
 # === Streamlit のページ設定 (一番最初に呼び出す) ===
-st.set_page_config(page_title="バドミントン部 連絡システム", layout="centered", page_icon="shutlle.svg") # アイコンを絵文字に修正
+st.set_page_config(page_title="バドミントン部 連絡システム", layout="centered", page_icon="shutlle.png") # アイコンを絵文字に修正
 
 # === 2. 設定値 (st.secrets からも読み込む) ===
 try:
