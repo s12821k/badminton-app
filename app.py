@@ -986,7 +986,7 @@ if not st.session_state.member_df.empty:
         
         # 理由（伝達事項）の必須チェックを「参加」以外に限定
         if current_status in ["欠席", "遅刻"] and not current_reason: 
-            errors.append("理由を入力してください"); # エラーメッセージを修正
+            errors.append("理由を入力"); # エラーメッセージを修正
         if current_status == "遅刻" and not current_late_time: # 遅刻を選択したが時刻が空
             errors.append("遅刻時刻を入力");
 
